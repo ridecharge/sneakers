@@ -10,6 +10,7 @@ namespace :sneakers do
     Rake::Task['environment'].invoke
 
     if defined?(::Rails)
+      puts "Forcing eager load"
       ::Rails.application.eager_load!
     end
 
@@ -18,6 +19,7 @@ namespace :sneakers do
     else
       workers, missing_workers = Sneakers::Utils.parse_workers(ENV['WORKERS'])
     end
+    puts "Forced eager load for #{workers}"
 
     unless missing_workers.nil? || missing_workers.empty?
       puts "Missing workers: #{missing_workers.join(', ')}" if missing_workers
