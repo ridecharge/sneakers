@@ -1,7 +1,8 @@
-require "sneakers/version"
-require 'thread/pool'
+require 'sneakers/version'
+require 'concurrent/executors'
 require 'bunny'
 require 'logger'
+require 'serverengine'
 
 module Sneakers
   module Handlers
@@ -11,10 +12,12 @@ module Sneakers
 end
 
 require 'sneakers/configuration'
+require 'sneakers/errors'
 require 'sneakers/support/production_formatter'
 require 'sneakers/concerns/logging'
 require 'sneakers/concerns/metrics'
 require 'sneakers/handlers/oneshot'
+require 'sneakers/content_type'
 require 'sneakers/worker'
 require 'sneakers/publisher'
 
@@ -26,7 +29,6 @@ module Sneakers
   def configure(opts={})
     # worker > userland > defaults
     CONFIG.merge!(opts)
-
     setup_general_logger!
     setup_worker_concerns!
     setup_general_publisher!
@@ -47,6 +49,10 @@ module Sneakers
     logger.level = loglevel
   end
 
+  def logger=(logger)
+    @logger = logger
+  end
+
   def logger
     @logger
   end
@@ -59,13 +65,35 @@ module Sneakers
     @configured
   end
 
+  def server=(server)
+    @server = server
+  end
+
+  def server?
+    @server
+  end
+
+  def configure_server
+    yield self if server?
+  end
+
+  # Register a proc to handle any error which occurs within the Sneakers process.
+  #
+  #   Sneakers.error_reporters << proc {|ex,ctx_hash| MyErrorService.notify(ex, ctx_hash) }
+  #
+  # The default error handler logs errors to Sneakers.logger.
+  # Ripped off from https://github.com/mperham/sidekiq/blob/6ad6a3aa330deebd76c6cf0d353f66abd3bef93b/lib/sidekiq.rb#L165-L174
+  def error_reporters
+    CONFIG[:error_reporters]
+  end
+
   private
 
   def setup_general_logger!
     if [:info, :debug, :error, :warn].all?{ |meth| CONFIG[:log].respond_to?(meth) }
       @logger = CONFIG[:log]
     else
-      @logger = Logger.new(CONFIG[:log])
+      @logger = ServerEngine::DaemonLogger.new(CONFIG[:log])
       @logger.formatter = Sneakers::Support::ProductionFormatter
     end
   end

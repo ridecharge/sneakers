@@ -46,13 +46,14 @@ module Sneakers
         retry_name = @opts[:retry_exchange] || "#{@worker_queue_name}-retry"
         error_name = @opts[:retry_error_exchange] || "#{@worker_queue_name}-error"
         requeue_name = @opts[:retry_requeue_exchange] || "#{@worker_queue_name}-retry-requeue"
+        retry_routing_key = @opts[:retry_routing_key] || "#"
 
         # Create the exchanges
         @retry_exchange, @error_exchange, @requeue_exchange = [retry_name, error_name, requeue_name].map do |name|
           Sneakers.logger.debug { "#{log_prefix} creating exchange=#{name}" }
           @channel.exchange(name,
                             :type => 'topic',
-                            :durable => opts[:durable])
+                            :durable => exchange_durable?)
         end
 
         # Create the queues and bindings
@@ -60,7 +61,7 @@ module Sneakers
           "#{log_prefix} creating queue=#{retry_name} x-dead-letter-exchange=#{requeue_name}"
         end
         @retry_queue = @channel.queue(retry_name,
-                                     :durable => opts[:durable],
+                                     :durable => queue_durable?,
                                      :arguments => {
                                        :'x-dead-letter-exchange' => requeue_name,
                                        :'x-message-ttl' => @opts[:retry_timeout] || 60000
@@ -71,11 +72,11 @@ module Sneakers
           "#{log_prefix} creating queue=#{error_name}"
         end
         @error_queue = @channel.queue(error_name,
-                                      :durable => opts[:durable])
+                                      :durable => queue_durable?)
         @error_queue.bind(@error_exchange, :routing_key => '#')
 
         # Finally, bind the worker queue to our requeue exchange
-        queue.bind(@requeue_exchange, :routing_key => '#')
+        queue.bind(@requeue_exchange, :routing_key => retry_routing_key)
 
         @max_retries = @opts[:retry_max_times] || 5
 
@@ -134,13 +135,14 @@ module Sneakers
             "#{log_prefix} msg=failing, retry_count=#{num_attempts}, reason=#{reason}"
           end
           data = {
-            error: reason,
+            error: reason.to_s,
             num_attempts: num_attempts,
             failed_at: Time.now.iso8601,
-            payload: Base64.encode64(msg.to_s)
+            payload: Base64.encode64(msg.to_s),
+            properties: Base64.encode64(props.to_json)
           }.tap do |hash|
             if reason.is_a?(Exception)
-              hash[:error_class] = reason.class
+              hash[:error_class] = reason.class.to_s
               hash[:error_message] = "#{reason}"
               if reason.backtrace
                 hash[:backtrace] = reason.backtrace.take(10).join(', ')
@@ -165,9 +167,16 @@ module Sneakers
         if headers.nil? || headers['x-death'].nil?
           0
         else
-          headers['x-death'].select do |x_death|
+          x_death_array = headers['x-death'].select do |x_death|
             x_death['queue'] == @worker_queue_name
-          end.count
+          end
+          if x_death_array.count > 0 && x_death_array.first['count']
+            # Newer versions of RabbitMQ return headers with a count key
+            x_death_array.inject(0) {|sum, x_death| sum + x_death['count']}
+          else
+            # Older versions return a separate x-death header for each failure
+            x_death_array.count
+          end
         end
       end
       private :failure_count
@@ -179,6 +188,15 @@ module Sneakers
       end
       private :log_prefix
 
+      private
+
+      def queue_durable?
+        @opts.fetch(:queue_options, {}).fetch(:durable, false)
+      end
+
+      def exchange_durable?
+        queue_durable?
+      end
     end
   end
 end
