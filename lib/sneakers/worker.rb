@@ -10,6 +10,7 @@ module Sneakers
     # (because it uses methods from them directly.)
     include Concerns::Logging
     include Concerns::Metrics
+    include Sneakers::ErrorReporter
 
     def initialize(queue = nil, pool = nil, opts = {})
       opts = opts.merge(self.class.queue_opts || {})
@@ -18,8 +19,9 @@ module Sneakers
 
       @should_ack =  opts[:ack]
       @timeout_after = opts[:timeout_job_after]
-      @pool = pool || Thread.pool(opts[:threads]) # XXX config threads
+      @pool = pool || Concurrent::FixedThreadPool.new(opts[:threads] || Sneakers::Configuration::DEFAULTS[:threads])
       @call_with_params = respond_to?(:work_with_params)
+      @content_type = opts[:content_type]
 
       @queue = queue || Sneakers::Queue.new(
         queue_name,
@@ -38,34 +40,37 @@ module Sneakers
       to_queue = opts.delete(:to_queue)
       opts[:routing_key] ||= to_queue
       return unless opts[:routing_key]
-      @queue.exchange.publish(msg, opts)
+      @queue.exchange.publish(Sneakers::ContentType.serialize(msg, opts[:content_type]), opts)
     end
 
     def do_work(delivery_info, metadata, msg, handler)
-      worker_trace "Working off: #{msg}"
+      worker_trace "Working off: #{msg.inspect}"
 
-      @pool.process do
+      @pool.post do
         res = nil
         error = nil
 
         begin
           metrics.increment("work.#{self.class.name}.started")
-          Timeout.timeout(@timeout_after, Timeout::Error) do
+          Timeout.timeout(@timeout_after, WorkerTimeout) do
             metrics.timing("work.#{self.class.name}.time") do
+              deserialized_msg = ContentType.deserialize(msg, @content_type || metadata && metadata[:content_type])
               if @call_with_params
-                res = work_with_params(msg, delivery_info, metadata)
+                res = work_with_params(deserialized_msg, delivery_info, metadata)
               else
-                res = work(msg)
+                res = work(deserialized_msg)
               end
             end
           end
-        rescue Timeout::Error
+        rescue WorkerTimeout => ex
           res = :timeout
-          worker_error('timeout')
+          worker_error(ex, log_msg: log_msg(msg), class: self.class.name,
+                       message: msg, delivery_info: delivery_info, metadata: metadata)
         rescue => ex
           res = :error
           error = ex
-          worker_error('unexpected error', ex)
+          worker_error(ex, log_msg: log_msg(msg), class: self.class.name,
+                       message: msg, delivery_info: delivery_info, metadata: metadata)
         end
 
         if @should_ack
@@ -88,12 +93,15 @@ module Sneakers
         end
 
         metrics.increment("work.#{self.class.name}.ended")
-      end #process
+      end #post
     end
 
     def stop
       worker_trace "Stopping worker: unsubscribing."
       @queue.unsubscribe
+      worker_trace "Stopping worker: shutting down thread pool."
+      @pool.shutdown
+      @pool.wait_for_termination
       worker_trace "Stopping worker: I'm gone."
     end
 
@@ -108,23 +116,15 @@ module Sneakers
       "[#{@id}][#{Thread.current}][#{@queue.name}][#{@queue.opts}] #{msg}"
     end
 
-    # Helper to log an error message with an optional exception
-    def worker_error(msg, exception = nil)
-      s = log_msg(msg)
-      if exception
-        s += " [Exception error=#{exception.message.inspect} error_class=#{exception.class}"
-        s += " backtrace=#{exception.backtrace.take(50).join(',')}" unless exception.backtrace.nil?
-        s += "]"
-      end
-      logger.error(s)
-    end
-
     def worker_trace(msg)
       logger.debug(log_msg(msg))
     end
 
+    Classes = []
+
     def self.included(base)
       base.extend ClassMethods
+      Classes << base if base.is_a? Class
     end
 
     module ClassMethods
@@ -136,14 +136,18 @@ module Sneakers
         @queue_opts = opts
       end
 
-      def enqueue(msg)
-        publisher.publish(msg, :to_queue => @queue_name)
+      def enqueue(msg, opts={})
+        opts[:routing_key] ||= @queue_opts[:routing_key]
+        opts[:content_type] ||= @queue_opts[:content_type]
+        opts[:to_queue] ||= @queue_name
+
+        publisher.publish(msg, opts)
       end
 
       private
 
       def publisher
-        @publisher ||= Sneakers::Publisher.new
+        @publisher ||= Sneakers::Publisher.new(queue_opts)
       end
     end
   end
