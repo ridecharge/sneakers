@@ -36,12 +36,7 @@ class HandlerTestWorker
   end
 end
 
-class TestPool
-  def process(*args,&block)
-    block.call
-  end
-end
-
+TestPool ||= Concurrent::ImmediateExecutor
 
 describe 'Handlers' do
   let(:channel) { Object.new }
@@ -103,11 +98,38 @@ describe 'Handlers' do
 
   describe 'Maxretry' do
     let(:max_retries) { nil }
+    let(:props_with_x_death_count) {
+      {
+        :headers => {
+          "x-death" => [
+                        {
+                          "count" => 3,
+                          "reason" => "expired",
+                          "queue" => "downloads-retry",
+                          "time" => Time.now,
+                          "exchange" => "RawMail-retry",
+                          "routing-keys" => ["RawMail"]
+                        },
+                        {
+                          "count" => 3,
+                          "reason" => "rejected",
+                          "queue" => "downloads",
+                          "time" => Time.now,
+                          "exchange" => "",
+                          "routing-keys" => ["RawMail"]
+                        }
+                       ]
+        },
+        :delivery_mode => 1
+      }
+    }
 
     before(:each) do
       @opts = {
         :exchange => 'sneakers',
-        :durable => 'true',
+        :queue_options => {
+          :durable => 'true',
+        }
       }.tap do |opts|
         opts[:retry_max_times] = max_retries unless max_retries.nil?
       end
@@ -225,6 +247,23 @@ describe 'Handlers' do
             data['error'].must_equal('reject')
             data['num_attempts'].must_equal(2)
             data['payload'].must_equal(Base64.encode64(:reject.to_s))
+            data['properties'].must_equal(Base64.encode64(@props_with_x_death.to_json))
+            Time.parse(data['failed_at']).wont_be_nil
+          end
+
+          it 'counts the number of attempts using the count key' do
+            mock(@header).routing_key { '#' }
+            mock(channel).acknowledge(37, false)
+
+            @error_exchange.extend MockPublish
+            worker.do_work(@header, props_with_x_death_count, :reject, @handler)
+            @error_exchange.called.must_equal(true)
+            @error_exchange.opts.must_equal({ :routing_key => '#' })
+            data = JSON.parse(@error_exchange.data)
+            data['error'].must_equal('reject')
+            data['num_attempts'].must_equal(4)
+            data['payload'].must_equal(Base64.encode64(:reject.to_s))
+            data['properties'].must_equal(Base64.encode64(props_with_x_death_count.to_json))
             Time.parse(data['failed_at']).wont_be_nil
           end
 
@@ -274,6 +313,7 @@ describe 'Handlers' do
             data['error'].must_equal('timeout')
             data['num_attempts'].must_equal(2)
             data['payload'].must_equal(Base64.encode64(:timeout.to_s))
+            data['properties'].must_equal(Base64.encode64(@props_with_x_death.to_json))
             Time.parse(data['failed_at']).wont_be_nil
           end
         end
@@ -305,6 +345,7 @@ describe 'Handlers' do
             data['backtrace'].wont_be_nil
             data['num_attempts'].must_equal(2)
             data['payload'].must_equal(Base64.encode64('boom!'))
+            data['properties'].must_equal(Base64.encode64(@props_with_x_death.to_json))
             Time.parse(data['failed_at']).wont_be_nil
           end
         end
@@ -341,6 +382,7 @@ describe 'Handlers' do
           data['error'].must_equal('timeout')
           data['num_attempts'].must_equal(2)
           data['payload'].must_equal(Base64.encode64(payload.to_json))
+          data['properties'].must_equal(Base64.encode64(@props_with_x_death.to_json))
         end
 
       end

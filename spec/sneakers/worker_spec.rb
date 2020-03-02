@@ -1,12 +1,23 @@
 require 'spec_helper'
 require 'sneakers'
 require 'timeout'
-
+require 'serverengine'
 
 class DummyWorker
   include Sneakers::Worker
   from_queue 'downloads',
-             :durable => false,
+             :exchange_options => {
+               :type => :topic,
+               :durable => false,
+               :auto_delete => true,
+               :arguments => { 'x-arg' => 'value' }
+             },
+             :queue_options => {
+               :durable => false,
+               :auto_delete => true,
+               :exclusive => true,
+               :arguments => { 'x-arg' => 'value' }
+             },
              :ack => false,
              :threads => 50,
              :prefetch => 40,
@@ -65,7 +76,16 @@ class PublishingWorker
   end
 end
 
+class JSONPublishingWorker
+  include Sneakers::Worker
+  from_queue 'defaults',
+             :ack => false,
+             :exchange => 'foochange'
 
+  def work(msg)
+    publish msg, :to_queue => 'target', :content_type => 'application/json'
+  end
+end
 
 class LoggingWorker
   include Sneakers::Worker
@@ -77,6 +97,15 @@ class LoggingWorker
   end
 end
 
+class JSONWorker
+  include Sneakers::Worker
+  from_queue 'defaults',
+             :ack => false,
+             :content_type => 'application/json'
+
+  def work(msg)
+  end
+end
 
 class MetricsWorker
   include Sneakers::Worker
@@ -101,12 +130,19 @@ class WithParamsWorker
   end
 end
 
+class WithDeprecatedExchangeOptionsWorker
+  include Sneakers::Worker
+  from_queue 'defaults',
+             :durable => false,
+             :exchange_type => :topic,
+             :exchange_arguments => { 'x-arg' => 'value' },
+             :arguments => { 'x-arg2' => 'value2' }
 
-class TestPool
-  def process(*args,&block)
-    block.call
+  def work(msg)
   end
 end
+
+TestPool ||= Concurrent::ImmediateExecutor
 
 def with_test_queuefactory(ctx, ack=true, msg=nil, nowork=false)
   qf = Object.new
@@ -131,43 +167,143 @@ describe Sneakers::Worker do
     stub(@queue).opts { {} }
     stub(@queue).exchange { @exchange }
 
+    Sneakers.clear!
     Sneakers.configure(:daemonize => true, :log => 'sneakers.log')
     Sneakers::Worker.configure_metrics
   end
 
   describe ".enqueue" do
     it "publishes a message to the class queue" do
-      message = "my message"
-      mock = MiniTest::Mock.new
+      message = 'test message'
 
-      mock.expect(:publish, true) do |msg, opts|
-        msg.must_equal(message)
-        opts.must_equal(:to_queue => "defaults")
+      mock(Sneakers::Publisher).new(DummyWorker.queue_opts) do
+        mock(Object.new).publish(message, {
+          :routing_key => 'test.routing.key',
+          :to_queue    => 'downloads',
+          :content_type => nil,
+        })
       end
 
-      stub(Sneakers::Publisher).new { mock }
-      DefaultsWorker.enqueue(message)
+      DummyWorker.enqueue(message, :routing_key => 'test.routing.key')
     end
   end
 
   describe "#initialize" do
     describe "builds an internal queue" do
-      before do
-        @dummy_q = DummyWorker.new.queue
-        @defaults_q = DefaultsWorker.new.queue
-      end
-
       it "should build a queue with correct configuration given defaults" do
+        @defaults_q = DefaultsWorker.new.queue
         @defaults_q.name.must_equal('defaults')
         @defaults_q.opts.to_hash.must_equal(
-          {:runner_config_file=>nil, :metrics=>nil, :daemonize=>true, :start_worker_delay=>0.2, :workers=>4, :log=>"sneakers.log", :pid_path=>"sneakers.pid", :timeout_job_after=>5, :prefetch=>10, :threads=>10, :durable=>true, :ack=>true, :amqp=>"amqp://guest:guest@localhost:5672", :vhost=>"/", :exchange=>"sneakers", :exchange_type=>:direct, :hooks=>{}, :handler=>Sneakers::Handlers::Oneshot, :heartbeat => 2}
+          :error_reporters => [Sneakers.error_reporters.last],
+          :runner_config_file => nil,
+          :metrics => nil,
+          :daemonize => true,
+          :start_worker_delay => 0.2,
+          :workers => 4,
+          :log => "sneakers.log",
+          :pid_path => "sneakers.pid",
+          :timeout_job_after => 5,
+          :prefetch => 10,
+          :threads => 10,
+          :share_threads => false,
+          :ack => true,
+          :amqp => "amqp://guest:guest@localhost:5672",
+          :vhost => "/",
+          :exchange => "sneakers",
+          :exchange_options => {
+            :type => :direct,
+            :durable => true,
+            :auto_delete => false,
+            :arguments => {}
+          },
+          :queue_options => {
+            :durable => true,
+            :auto_delete => false,
+            :exclusive => false,
+            :arguments => {}
+          },
+          :hooks => {},
+          :handler => Sneakers::Handlers::Oneshot,
+          :heartbeat => 30,
+          :amqp_heartbeat => 30
         )
       end
 
       it "should build a queue with given configuration" do
+        @dummy_q = DummyWorker.new.queue
         @dummy_q.name.must_equal('downloads')
         @dummy_q.opts.to_hash.must_equal(
-          {:runner_config_file=>nil, :metrics=>nil, :daemonize=>true, :start_worker_delay=>0.2, :workers=>4, :log=>"sneakers.log", :pid_path=>"sneakers.pid", :timeout_job_after=>1, :prefetch=>40, :threads=>50, :durable=>false, :ack=>false, :amqp=>"amqp://guest:guest@localhost:5672", :vhost=>"/", :exchange=>"dummy", :exchange_type=>:direct, :hooks=>{}, :handler=>Sneakers::Handlers::Oneshot, :heartbeat =>5}
+          :error_reporters => [Sneakers.error_reporters.last],
+          :runner_config_file => nil,
+          :metrics => nil,
+          :daemonize => true,
+          :start_worker_delay => 0.2,
+          :workers => 4,
+          :log => "sneakers.log",
+          :pid_path => "sneakers.pid",
+          :timeout_job_after => 1,
+          :prefetch => 40,
+          :threads => 50,
+          :share_threads => false,
+          :ack => false,
+          :amqp => "amqp://guest:guest@localhost:5672",
+          :vhost => "/",
+          :exchange => "dummy",
+          :exchange_options => {
+            :type => :topic,
+            :durable => false,
+            :auto_delete => true,
+            :arguments => { 'x-arg' => 'value' }
+          },
+          :queue_options => {
+            :durable => false,
+            :auto_delete => true,
+            :exclusive => true,
+            :arguments => { 'x-arg' => 'value' }
+          },
+          :hooks => {},
+          :handler => Sneakers::Handlers::Oneshot,
+          :heartbeat => 5,
+          :amqp_heartbeat => 30
+        )
+      end
+
+      it "should build a queue with correct configuration given deprecated exchange options" do
+        @deprecated_exchange_opts_q = WithDeprecatedExchangeOptionsWorker.new.queue
+        @deprecated_exchange_opts_q.name.must_equal('defaults')
+        @deprecated_exchange_opts_q.opts.to_hash.must_equal(
+          :error_reporters => [Sneakers.error_reporters.last],
+          :runner_config_file => nil,
+          :metrics => nil,
+          :daemonize => true,
+          :start_worker_delay => 0.2,
+          :workers => 4,
+          :log => "sneakers.log",
+          :pid_path => "sneakers.pid",
+          :timeout_job_after => 5,
+          :prefetch => 10,
+          :threads => 10,
+          :share_threads => false,
+          :ack => true,
+          :amqp => "amqp://guest:guest@localhost:5672",
+          :vhost => "/",
+          :exchange => "sneakers",
+          :exchange_options => {
+            :type => :topic,
+            :durable => false,
+            :auto_delete => false,
+            :arguments => { 'x-arg' => 'value' }
+          },
+          :queue_options => {
+            :durable => false,
+            :auto_delete => false,
+            :exclusive => false,
+            :arguments => { 'x-arg2' => 'value2' }
+          },
+          :hooks => {},
+          :handler => Sneakers::Handlers::Oneshot,
+          :heartbeat => 30,
+          :amqp_heartbeat => 30
         )
       end
     end
@@ -210,13 +346,45 @@ describe Sneakers::Worker do
       w.do_work(nil, nil, "msg", nil)
     end
 
+    describe 'content type based deserialization' do
+      before do
+        Sneakers::ContentType.register(
+          content_type: 'application/json',
+          serializer: ->(_) {},
+          deserializer: ->(payload) { JSON.parse(payload) },
+        )
+      end
+
+      after do
+        Sneakers::ContentType.reset!
+      end
+
+      it 'should use the registered deserializer if the content type is in the metadata' do
+        w = DummyWorker.new(@queue, TestPool.new)
+        mock(w).work({'foo' => 'bar'}).once
+        w.do_work(nil, { content_type: 'application/json' }, '{"foo":"bar"}', nil)
+      end
+
+      it 'should use the registered deserializer if the content type is in the queue options' do
+        w = JSONWorker.new(@queue, TestPool.new)
+        mock(w).work({'foo' => 'bar'}).once
+        w.do_work(nil, {}, '{"foo":"bar"}', nil)
+      end
+
+      it 'should use the deserializer from the queue options even if the metadata has a different content type' do
+        w = JSONWorker.new(@queue, TestPool.new)
+        mock(w).work({'foo' => 'bar'}).once
+        w.do_work(nil, { content_type: 'not/real' }, '{"foo":"bar"}', nil)
+      end
+    end
+
     it "should catch runtime exceptions from a bad work" do
       w = AcksWorker.new(@queue, TestPool.new)
       mock(w).work("msg").once{ raise "foo" }
       handler = Object.new
       header = Object.new
       mock(handler).error(header, nil, "msg", anything)
-      mock(w.logger).error(/unexpected error \[Exception error="foo" error_class=RuntimeError backtrace=.*/)
+      mock(w.logger).error(/\[Exception error="foo" error_class=RuntimeError backtrace=.*/)
       w.do_work(header, nil, "msg", handler)
     end
 
@@ -238,7 +406,7 @@ describe Sneakers::Worker do
       header = Object.new
 
       mock(handler).timeout(header, nil, "msg")
-      mock(w.logger).error(/timeout/)
+      mock(w.logger).error(/error="execution expired" error_class=Sneakers::WorkerTimeout backtrace=/)
 
       w.do_work(header, nil, "msg", handler)
     end
@@ -312,6 +480,27 @@ describe Sneakers::Worker do
       mock(@exchange).publish('msg', :routing_key => 'target', :expiration => 1).once
       w.publish 'msg', :to_queue => 'target', :expiration => 1
     end
+
+    describe 'content_type based serialization' do
+      before do
+        Sneakers::ContentType.register(
+          content_type: 'application/json',
+          serializer: ->(payload) { JSON.dump(payload) },
+          deserializer: ->(_) {},
+        )
+      end
+
+      after do
+        Sneakers::ContentType.reset!
+      end
+
+      it 'should be able to publish a message from working context' do
+        w = JSONPublishingWorker.new(@queue, TestPool.new)
+        mock(@exchange).publish('{"foo":"bar"}', :routing_key => 'target', :content_type => 'application/json').once
+        w.do_work(nil, {}, {'foo' => 'bar'}, nil)
+      end
+    end
+
   end
 
 
@@ -336,8 +525,9 @@ describe Sneakers::Worker do
     describe '#worker_error' do
       it 'only logs backtraces if present' do
         w = DummyWorker.new(@queue, TestPool.new)
-        mock(w.logger).error(/cuz \[Exception error="boom!" error_class=RuntimeError\]/)
-        w.worker_error('cuz', RuntimeError.new('boom!'))
+        mock(w.logger).warn('cuz')
+        mock(w.logger).error(/\[Exception error="boom!" error_class=RuntimeError\]/)
+        w.worker_error(RuntimeError.new('boom!'), 'cuz')
       end
     end
 

@@ -25,15 +25,18 @@ module Sneakers
 
     method_option :debug
     method_option :daemonize
+    method_option :log
+    method_option :pid_path
     method_option :require
 
     desc "work FirstWorker,SecondWorker ... ,NthWorker", "Run workers"
-    def work(workers)
+    def work(workers = "")
       opts = {
         :daemonize => !!options[:daemonize]
       }
 
-      opts[:log] =  opts[:daemonize] ? 'sneakers.log' : STDOUT
+      opts[:log] = options[:log] || (opts[:daemonize] ? 'sneakers.log' : STDOUT)
+      opts[:pid_path] = options[:pid_path] if options[:pid_path]
 
       if opts[:daemonize]
         puts "*** DEPRACATED: self-daemonization '--daemonize' is considered a bad practice, which is why this feature will be removed in future versions. Please run Sneakers in front, and use things like upstart, systemd, or supervisor to manage it as a daemon."
@@ -44,9 +47,13 @@ module Sneakers
 
       require_boot File.expand_path(options[:require]) if options[:require]
 
-      workers, missing_workers = Sneakers::Utils.parse_workers(workers)
+      if workers.empty?
+        workers = Sneakers::Worker::Classes
+      else
+        workers, missing_workers = Sneakers::Utils.parse_workers(workers)
+      end
 
-      unless missing_workers.empty?
+      unless missing_workers.nil? || missing_workers.empty?
         say "Missing workers: #{missing_workers.join(', ')}" if missing_workers
         say "Did you `require` properly?"
         return
