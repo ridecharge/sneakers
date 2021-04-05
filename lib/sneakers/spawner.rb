@@ -13,14 +13,19 @@ module Sneakers
       @pids = []
       @exec_string = "bundle exec rake sneakers:run"
       worker_config = YAML.load(File.read(worker_group_config_file))
+      puts "[#{Process.pid}] The number of entries in worker config: #{worker_config.size}"
       worker_config.keys.each do |group_name|
         workers = worker_config[group_name]['classes']
         workers = workers.join "," if workers.is_a?(Array)
+        puts "Ready to fork ##{Process.pid} parent process for the #{group_name} group"
         @pids << fork do
           @exec_hash = {"WORKERS"=> workers, "WORKER_COUNT" => worker_config[group_name]["workers"].to_s}
+          puts "Inside fork block of ##{Process.pid} process, exec hash: #{@exec_hash}"
           Kernel.exec(@exec_hash, @exec_string)
         end
       end
+      puts "[#{Process.pid}] The number of worked processes: #{@pids.size}"
+      puts "[#{Process.pid}] Forked processes pids: #{@pids}"
       ["TERM", "USR1", "HUP", "USR2"].each do |signal|
         Signal.trap(signal){ @pids.each{|pid| Process.kill(signal, pid) } }
       end
