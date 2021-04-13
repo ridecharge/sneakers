@@ -6,6 +6,8 @@ task :environment
 namespace :sneakers do
   desc "Start work (set $WORKERS=Klass1,Klass2)"
   task :run do
+    puts "Executed WORKERS=#{ENV['WORKERS']} rake sneakers:run; My PID is #{Process.pid}"
+
     Sneakers.server = true
     Rake::Task['environment'].invoke
 
