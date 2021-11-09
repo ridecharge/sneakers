@@ -20,6 +20,9 @@ module Sneakers
       @should_ack =  opts[:ack]
       @timeout_after = opts[:timeout_job_after]
       @pool = pool || Concurrent::FixedThreadPool.new(opts[:threads] || Sneakers::Configuration::DEFAULTS[:threads])
+      Sneakers.logger.info("opts[:threads] -> #{opts[:threads].inspect}")
+      Sneakers.logger.info("Sneakers::Configuration::DEFAULTS[:threads] -> #{Sneakers::Configuration::DEFAULTS[:threads].inspect}")
+      Sneakers.logger.info("@pool-> #{@pool.inspect}")
       @call_with_params = respond_to?(:work_with_params)
       @content_type = opts[:content_type]
 
