@@ -44,13 +44,16 @@ module Sneakers
     end
 
     def do_work(delivery_info, metadata, msg, handler)
+      ingest_at = Time.now.utc
       worker_trace "Working off: #{msg.inspect}"
 
       @pool.post do
+        Thread.current[:sneakers_ingest_at] = ingest_at
         res = nil
         error = nil
 
         begin
+          metrics.gauge("work.#{self.class.name}.start_delay", ((Time.now.utc - ingest_at) * 1000).to_i)
           metrics.increment("work.#{self.class.name}.started")
           Timeout.timeout(@timeout_after, WorkerTimeout) do
             metrics.timing("work.#{self.class.name}.time") do

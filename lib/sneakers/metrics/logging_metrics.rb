@@ -10,6 +10,10 @@ module Sneakers
         block.call
         Sneakers.logger.info("TIME: #{metric} #{Time.now - start}")
       end
+
+      def gauge(metric, value)
+        Sneakers.logger.info("GAUGE: #{metric} #{value}")
+      end
     end
   end
 end

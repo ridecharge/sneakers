@@ -26,6 +26,10 @@ module Sneakers
         record_stat(metric, ((Time.now - start)*1000).floor)
       end
 
+      def gauge(metric, value)
+        record_stat(metric, value)
+      end
+
       def stats(metric)
         metric.gsub! "\.", "\/"
         NewrelicMetrics.eagent::Agent.get_stats("Custom/#{metric}")

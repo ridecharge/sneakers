@@ -608,6 +608,7 @@ describe Sneakers::Worker do
       mock(@w.metrics).increment("work.MetricsWorker.started").once
       mock(@w.metrics).increment("work.MetricsWorker.ended").once
       mock(@w.metrics).timing("work.MetricsWorker.time").yields.once
+      mock(@w.metrics).gauge("work.MetricsWorker.start_delay", anything).once
     end
 
     it 'should be able to meter acks' do
@@ -645,6 +646,15 @@ describe Sneakers::Worker do
       mock(@w.metrics).increment("work.MetricsWorker.handled.noop").once
       @w.do_work(@header, nil, nil, @handler)
     end
+
+    it 'should set sneakers_ingest_at thread local' do
+      stub(@w.metrics).increment
+      stub(@w.metrics).gauge
+      before = Time.now.utc
+      @w.do_work(@delivery_info, nil, :ack, @handler)
+      Thread.current[:sneakers_ingest_at].wont_be_nil
+      Thread.current[:sneakers_ingest_at].must_be :>=, before
+    end
   end
 
 
@@ -661,6 +671,7 @@ describe Sneakers::Worker do
 
       @w = WithParamsWorker.new(@queue, TestPool.new)
       mock(@w.metrics).timing("work.WithParamsWorker.time").yields.once
+      mock(@w.metrics).gauge("work.WithParamsWorker.start_delay", anything).once
     end
 
     it 'should call work_with_params and not work' do

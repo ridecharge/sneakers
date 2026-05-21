@@ -15,6 +15,9 @@ module Sneakers
         @connection.timing(metric, ((Time.now - start)*1000).floor)
       end
 
+      def gauge(metric, value)
+        @connection.gauge(metric, value)
+      end
     end
   end
 end
