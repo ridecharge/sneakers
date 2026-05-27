@@ -1,3 +1,3 @@
 module Sneakers
-  VERSION = "10.0.0.curb"
+  VERSION = "10.0.1.curb"
 end

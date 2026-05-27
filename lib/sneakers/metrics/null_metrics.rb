@@ -7,6 +7,9 @@ module Sneakers
       def timing(metric, &block)
         block.call
       end
+
+      def gauge(metric, value)
+      end
     end
   end
 end
