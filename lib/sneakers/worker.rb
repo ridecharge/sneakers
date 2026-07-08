@@ -59,6 +59,9 @@ module Sneakers
             metrics.timing("work.#{self.class.name}.time") do
               deserialized_msg = ContentType.deserialize(msg, @content_type || metadata && metadata[:content_type])
 
+              worker_trace "@call_with_params: #{@call_with_params.inspect}"
+              worker_trace "metadata: #{metadata.inspect}"
+
               app = -> (deserialized_msg, delivery_info, metadata, handler) do
                 if @call_with_params
                   work_with_params(deserialized_msg, delivery_info, metadata)
